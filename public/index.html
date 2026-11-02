@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SynapseRIS — Sistema de Telerradiologia & Fluxo Orthanc PACS (HL7 FHIR R4)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+
+  <!-- ========================================================================
+       1. TELA DE LOGIN COM ALTERNÂNCIA DE PERFIL (ADMIN / RADIOLOGISTA)
+       ======================================================================== -->
+  <section id="login-screen" class="login-overlay">
+    <div class="login-container">
+      <div class="login-brand-panel">
+        <div>
+          <div class="brand-logo-row">
+            <div class="brand-icon">SR</div>
+            <div>
+              <div class="brand-title">SynapseRIS</div>
+              <div class="brand-subtitle">Teleradiology &amp; Orthanc PACS Suite</div>
+            </div>
+          </div>
+
+          <div class="login-Pitch">
+            <h2>Plataforma Clínica RIS + PACS de Alta Precisão</h2>
+            <p>
+              Gestão completa de fila radiológica (Worklist), distribuição inteligente de SLA,
+              visualização DICOM integrada ao <strong>Orthanc PACS (Porta 8042)</strong> e
+              interoperabilidade nativa no padrão <strong>HL7 FHIR R4</strong>.
+            </p>
+          </div>
+
+          <div class="login-badges">
+            <div class="tech-pill">
+              <span>⚡</span>
+              <div><strong>Orthanc PACS Integrado:</strong> Stone WebViewer / OHIF / Explorer (<code>http://localhost:8042</code>)</div>
+            </div>
+            <div class="tech-pill">
+              <span>🧬</span>
+              <div><strong>Arquitetura HL7 FHIR R4:</strong> <code>Patient</code>, <code>ServiceRequest</code>, <code>ImagingStudy</code>, <code>DiagnosticReport</code></div>
+            </div>
+            <div class="tech-pill">
+              <span>🖥️</span>
+              <div><strong>Estação de Laudo Split-Screen:</strong> 60% DICOM Viewer / 40% Prontuário &amp; Editor Rico</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="font-size: 11.5px; color: var(--text-muted); margin-top: 24px;">
+          Padrão DICOM PS3.18 (WADO-RS / QIDO-RS) &bull; HL7 FHIR R4 v4.0.1 &bull; Dark Mode Radiológico
+        </div>
+      </div>
+
+      <div class="login-form-panel">
+        <h3>Acesso ao Sistema</h3>
+        <p class="sub">Selecione o perfil operacional para iniciar a sessão no SynapseRIS:</p>
+
+        <div class="profile-switch-grid">
+          <button type="button" id="role-btn-admin" class="profile-card-btn active" onclick="selectLoginProfile('admin')">
+            <span class="role-tag">Gestão &amp; Coordenação</span>
+            <span class="role-title">Administrador / Operador</span>
+            <span class="role-desc">Dashboard geral, KPIs de SLA, distribuição de modalidades e atribuição de exames.</span>
+          </button>
+
+          <button type="button" id="role-btn-radiologist" class="profile-card-btn" onclick="selectLoginProfile('radiologist')">
+            <span class="role-tag">Área Médica</span>
+            <span class="role-title">Médico Radiologista</span>
+            <span class="role-desc">Worklist dedicada de laudos, filtros clínicos e Workspace Split-Screen integrado.</span>
+          </button>
+        </div>
+
+        <div id="login-admin-fields" class="form-group">
+          <label for="login-admin-user">Operador / Coordenador de Fluxo</label>
+          <select id="login-admin-user" class="form-control">
+            <option value="Mariana Costa — Coordenação RIS/PACS">Mariana Costa — Coordenação RIS/PACS (Admin)</option>
+            <option value="Rafael Oliveira — Supervisor de Telerradiologia">Rafael Oliveira — Supervisor de Telerradiologia (Admin)</option>
+          </select>
+        </div>
+
+        <div id="login-radiologist-fields" class="form-group hidden">
+          <label for="login-radiologist-select">Médico Radiologista Responsável (FHIR Practitioner)</label>
+          <select id="login-radiologist-select" class="form-control"></select>
+        </div>
+
+        <div class="form-group">
+          <label for="login-orthanc-url">Endpoint Orthanc PACS Configurado</label>
+          <input type="text" id="login-orthanc-url" class="form-control" value="http://localhost:8042" readonly />
+        </div>
+
+        <button type="button" class="btn btn-primary btn-block" onclick="enterApplication()">
+          Entrar na Plataforma SynapseRIS &rarr;
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========================================================================
+       SHELL PRINCIPAL DA APLICAÇÃO
+       ======================================================================== -->
+  <div id="app-shell" class="app-shell hidden">
+    <!-- Topbar -->
+    <header class="topbar">
+      <div class="topbar-left">
+        <div class="topbar-brand">
+          <div class="mini-logo">SR</div>
+          <div>
+            <span class="title">SynapseRIS</span>
+            <span class="tag">FHIR R4 + ORTHANC</span>
+          </div>
+        </div>
+
+        <nav class="nav-tabs">
+          <button type="button" id="nav-admin" class="nav-tab active" onclick="switchView('admin')">
+            <span>📊</span> Dashboard &amp; Worklist (Admin)
+          </button>
+          <button type="button" id="nav-radiologist" class="nav-tab" onclick="switchView('radiologist')">
+            <span>🩺</span> Worklist do Radiologista
+          </button>
+          <button type="button" id="nav-workspace" class="nav-tab" onclick="openWorkspaceDefault()">
+            <span>🖥️</span> Workspace de Laudo (60/40)
+          </button>
+          <button type="button" id="nav-fhir" class="nav-tab" onclick="openFhirBundleModal()">
+            <span>🧬</span> Recursos HL7 FHIR
+          </button>
+        </nav>
+      </div>
+
+      <div class="topbar-right">
+        <div class="orthanc-pill" onclick="checkAndSyncOrthanc(true)" title="Clique para testar conexão e sincronizar estudos do Orthanc PACS">
+          <span id="orthanc-status-dot" class="status-dot demo"></span>
+          <span id="orthanc-status-text">Orthanc :8042</span>
+        </div>
+
+        <div class="user-profile-pill">
+          <div id="active-user-avatar" class="user-avatar">AD</div>
+          <div class="user-meta">
+            <span id="active-user-name" class="u-name">Administrador</span>
+            <span id="active-user-role" class="u-role">Administrador / Operador</span>
+          </div>
+        </div>
+
+        <button type="button" class="btn btn-secondary btn-sm" onclick="toggleProfileQuick()">
+          Alternar Perfil
+        </button>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="logoutToLoginScreen()">
+          Trocar Conta
+        </button>
+      </div>
+    </header>
+
+    <!-- ======================================================================
+         2. VISÃO ADMIN: DASHBOARD GERAL & WORKLIST
+         ====================================================================== -->
+    <main id="admin-view" class="view-section">
+      <div class="section-header">
+        <div>
+          <h1>Dashboard Operacional &amp; Worklist Geral (Visão Admin)</h1>
+          <p>Monitoramento em tempo real dos estudos DICOM, distribuição de modalidades, fila de prioridade e atribuição médica.</p>
+        </div>
+        <div class="action-btn-group">
+          <button type="button" class="btn btn-secondary" onclick="checkAndSyncOrthanc(true)">
+            🔄 Sincronizar Orthanc PACS (:8042)
+          </button>
+          <button type="button" class="btn btn-primary" onclick="openFhirBundleModal()">
+            🧬 Inspecionar Bundle HL7 FHIR R4
+          </button>
+        </div>
+      </div>
+
+      <!-- 5 Cards de Métricas -->
+      <div class="kpi-grid">
+        <div class="kpi-card kpi-total">
+          <span class="kpi-label">Total de Estudos</span>
+          <div id="kpi-total-studies" class="kpi-value">0</div>
+          <span class="kpi-foot">Recursos FHIR <code>ImagingStudy</code> ativos</span>
+        </div>
+
+        <div class="kpi-card kpi-unassigned">
+          <span class="kpi-label">Não Atribuídos</span>
+          <div id="kpi-unassigned" class="kpi-value" style="color: #fbbf24;">0</div>
+          <span class="kpi-foot">Aguardando designação de radiologista</span>
+        </div>
+
+        <div class="kpi-card kpi-progress">
+          <span class="kpi-label">Em Andamento</span>
+          <div id="kpi-in-progress" class="kpi-value" style="color: #818cf8;">0</div>
+          <span class="kpi-foot">Atribuídos / Rascunho em elaboração</span>
+        </div>
+
+        <div class="kpi-card kpi-finalized">
+          <span class="kpi-label">Laudos Finalizados</span>
+          <div id="kpi-finalized" class="kpi-value" style="color: #34d399;">0</div>
+          <span class="kpi-foot"><code>DiagnosticReport.status = final</code></span>
+        </div>
+
+        <div class="kpi-card kpi-urgent">
+          <span class="kpi-label">Casos Urgentes</span>
+          <div id="kpi-urgent" class="kpi-value" style="color: #fb7185;">0</div>
+          <span class="kpi-foot">Prioridade <code>STAT / Urgent</code> em fila</span>
+        </div>
+      </div>
+
+      <!-- Gráfico Donut de Modalidades + Painel de Integração Orthanc PACS -->
+      <div class="analytics-row">
+        <div class="panel-card">
+          <div class="panel-card-header">
+            <h3>Distribuição por Modalidade DICOM</h3>
+            <span>CT &bull; MR &bull; CR &bull; DX &bull; US &bull; PT</span>
+          </div>
+          <div class="donut-layout">
+            <div class="donut-svg-wrap">
+              <svg id="modality-donut-svg" viewBox="0 0 42 42" width="180" height="180"></svg>
+              <div class="donut-center-label">
+                <span id="donut-total-num" class="big">0</span>
+                <span class="small">Exames</span>
+              </div>
+            </div>
+            <div id="modality-legend-container" class="modality-legend-list"></div>
+          </div>
+        </div>
+
+        <div class="panel-card orthanc-integration-box">
+          <div class="panel-card-header">
+            <h3>Status da Integração Orthanc PACS &amp; Barramento HL7 FHIR</h3>
+            <span id="orthanc-badge-mode">Verificando...</span>
+          </div>
+
+          <div class="integration-grid">
+            <div class="kv-box">
+              <div class="k">Servidor Orthanc PACS (ORTHANC_URL)</div>
+              <div id="info-orthanc-url" class="v">http://localhost:8042</div>
+            </div>
+            <div class="kv-box">
+              <div class="k">Viewer DICOM Padrão</div>
+              <div id="info-orthanc-viewer" class="v">stone-webviewer</div>
+            </div>
+            <div class="kv-box">
+              <div class="k">Endpoints Proxy / PACS</div>
+              <div class="v">GET /studies &bull; GET /patients/{id}</div>
+            </div>
+            <div class="kv-box">
+              <div class="k">Recursos HL7 FHIR R4 Modelados</div>
+              <div class="v">Patient &bull; ServiceRequest &bull; ImagingStudy &bull; DiagnosticReport</div>
+            </div>
+          </div>
+
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px; font-size: 12px; color: var(--text-secondary);">
+            <span id="orthanc-detailed-msg">Conexão PACS configurada na porta 8042 com fallback resiliente ativo.</span>
+            <a id="orthanc-direct-link" href="http://localhost:8042" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">
+              Abrir Orthanc :8042 &#8599;
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tabela de Worklist Geral (Admin) -->
+      <div class="worklist-card">
+        <div class="worklist-toolbar">
+          <div class="filter-controls">
+            <div class="search-input-wrap">
+              <input
+                type="text"
+                id="admin-search-input"
+                placeholder="Buscar paciente, ID DICOM, Accession, exame ou hospital..."
+                oninput="renderAdminWorklist()"
+              />
+            </div>
+
+            <select id="admin-filter-modality" class="filter-select" onchange="renderAdminWorklist()">
+              <option value="ALL">Todas as Modalidades</option>
+              <option value="CT">CT — Tomografia Computadorizada</option>
+              <option value="MR">MR — Ressonância Magnética</option>
+              <option value="CR">CR — Radiografia Computadorizada</option>
+              <option value="DX">DX — Radiografia Digital</option>
+              <option value="US">US — Ultrassonografia</option>
+              <option value="PT">PT — PET-CT</option>
+            </select>
+
+            <select id="admin-filter-status" class="filter-select" onchange="renderAdminWorklist()">
+              <option value="ALL">Todos os Status</option>
+              <option value="unassigned">Não Atribuído</option>
+              <option value="awaiting">Aguardando Laudo</option>
+              <option value="draft">Em Rascunho</option>
+              <option value="final">Laudo Finalizado</option>
+            </select>
+
+            <select id="admin-filter-priority" class="filter-select" onchange="renderAdminWorklist()">
+              <option value="ALL">Todas as Prioridades</option>
+              <option value="urgent">Urgente (STAT)</option>
+              <option value="routine">Rotina</option>
+            </select>
+          </div>
+
+          <div style="font-size: 12px; color: var(--text-secondary);">
+            Exibindo <strong id="admin-table-count">0</strong> estudos
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="ris-table">
+            <thead>
+              <tr>
+                <th>Paciente (Nome / ID / Nasc.)</th>
+                <th>Detalhe do Exame / Study Description</th>
+                <th>Hospital / Clínica de Origem</th>
+                <th>Modalidade</th>
+                <th>Prioridade</th>
+                <th>Data de Recebimento</th>
+                <th>Radiologista Responsável</th>
+                <th>Status</th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody id="admin-worklist-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+
+    <!-- ======================================================================
+         3. WORKLIST DO MÉDICO RADIOLOGISTA
+         ====================================================================== -->
+    <main id="radiologist-view" class="view-section hidden">
+      <div class="section-header">
+        <div>
+          <h1>Worklist do Médico Radiologista</h1>
+          <p>Fila inteligente de leitura diagnóstica com filtros por período, modalidade e status do laudo.</p>
+        </div>
+
+        <div class="filter-controls">
+          <label for="active-radiologist-filter" style="font-size: 12px; color: var(--text-secondary); font-weight: 600;">
+            Radiologista Ativo:
+          </label>
+          <select id="active-radiologist-filter" class="filter-select" onchange="onChangeActiveRadiologist(this.value)"></select>
+        </div>
+      </div>
+
+      <div class="worklist-card">
+        <div class="worklist-toolbar">
+          <div class="filter-controls">
+            <div class="search-input-wrap">
+              <input
+                type="text"
+                id="rad-search-input"
+                placeholder="Buscar paciente, AccessionNumber ou estudo..."
+                oninput="renderRadiologistWorklist()"
+              />
+            </div>
+
+            <!-- Filtro por Período -->
+            <select id="rad-filter-period" class="filter-select" onchange="renderRadiologistWorklist()">
+              <option value="ALL">Período: Todos os Exames</option>
+              <option value="TODAY">Hoje (02/11/2026)</option>
+              <option value="LAST_3_DAYS">Últimos 3 Dias</option>
+              <option value="LAST_7_DAYS">Últimos 7 Dias</option>
+              <option value="LAST_30_DAYS">Últimos 30 Dias</option>
+            </select>
+
+            <!-- Filtro por Modalidade -->
+            <select id="rad-filter-modality" class="filter-select" onchange="renderRadiologistWorklist()">
+              <option value="ALL">Modalidade: Todas</option>
+              <option value="CT">CT — Tomografia</option>
+              <option value="MR">MR — Ressonância</option>
+              <option value="CR">CR — Radiografia Comp.</option>
+              <option value="DX">DX — Radiografia Digital</option>
+              <option value="US">US — Ultrassonografia</option>
+              <option value="PT">PT — PET-CT</option>
+            </select>
+
+            <!-- Filtro por Status do Laudo -->
+            <select id="rad-filter-status" class="filter-select" onchange="renderRadiologistWorklist()">
+              <option value="ALL">Status do Laudo: Todos</option>
+              <option value="awaiting">Aguardando Laudo</option>
+              <option value="draft">Rascunho</option>
+              <option value="final">Finalizado</option>
+              <option value="unassigned">Fila Geral (Não Atribuído)</option>
+            </select>
+
+            <!-- Escopo de Atribuição -->
+            <select id="rad-filter-scope" class="filter-select" onchange="renderRadiologistWorklist()">
+              <option value="ALL">Fila Completa do Serviço</option>
+              <option value="MINE">Apenas Atribuídos a Mim</option>
+            </select>
+          </div>
+
+          <div style="font-size: 12px; color: var(--text-secondary);">
+            Estudos filtrados: <strong id="rad-table-count">0</strong>
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="ris-table">
+            <thead>
+              <tr>
+                <th>Prioridade</th>
+                <th>Paciente (Nome, ID, Data Nasc.)</th>
+                <th>Exame / Study Description &amp; Indicação</th>
+                <th>Modalidade</th>
+                <th>Recebimento</th>
+                <th>Radiologista</th>
+                <th>Status do Laudo</th>
+                <th>Ação Direta</th>
+              </tr>
+            </thead>
+            <tbody id="radiologist-worklist-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+
+    <!-- ======================================================================
+         4. WORKSPACE DE LAUDO INTEGRADO — SPLIT SCREEN (60% ESQ / 40% DIR)
+         ====================================================================== -->
+    <main id="workspace-view" class="workspace-split-container hidden">
+      <!-- Lado Esquerdo (60% da largura): Container DICOM Viewer Orthanc -->
+      <div class="workspace-left-viewer">
+        <div class="viewer-toolbar">
+          <div class="viewer-toolbar-left">
+            <span class="modality-badge mod-CT" id="ws-viewer-modality-badge">CT</span>
+            <select id="ws-viewer-engine-select" class="filter-select" onchange="onChangeViewerEngine(this.value)">
+              <option value="stone-webviewer">Orthanc Stone WebViewer (:8042)</option>
+              <option value="ohif">OHIF DICOM Viewer (:8042)</option>
+              <option value="explorer.html">Orthanc Explorer (:8042)</option>
+              <option value="simulator">Preview Clínico Multi-Slice (Simulador Local)</option>
+            </select>
+            <div id="ws-viewer-url-display" class="viewer-url-bar" title="URL do DICOM Viewer do Orthanc">
+              http://localhost:8042/stone-webviewer/index.html?study=...
+            </div>
+          </div>
+
+          <div class="viewer-toolbar-right">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="toggleViewerMode()" id="ws-toggle-iframe-btn">
+              Alternar Iframe / Simulador
+            </button>
+            <a id="ws-open-external-viewer" href="http://localhost:8042" target="_blank" rel="noopener" class="btn btn-primary btn-sm">
+              Abrir no Orthanc &#8599;
+            </a>
+          </div>
+        </div>
+
+        <div class="viewer-stage">
+          <!-- Iframe real para o Orthanc PACS -->
+          <iframe
+            id="orthanc-viewer-iframe"
+            class="orthanc-iframe hidden"
+            title="Orthanc PACS DICOM Viewer"
+            allow="fullscreen"
+          ></iframe>
+
+          <!-- Placeholder Visual Elegante + Simulador DICOM Interativo -->
+          <div id="orthanc-viewer-placeholder" class="viewer-placeholder-overlay">
+            <div class="dicom-hud-top">
+              <div>
+                <div><strong id="hud-patient-name">PACIENTE</strong> (<span id="hud-patient-id">ID</span>)</div>
+                <div>DOB: <span id="hud-patient-dob">--</span> &bull; Sexo: <span id="hud-patient-sex">--</span></div>
+                <div>Acc: <span id="hud-accession">--</span></div>
+              </div>
+              <div style="text-align: right;">
+                <div><strong id="hud-study-desc">ESTUDO DICOM</strong></div>
+                <div>StudyUID: <span id="hud-study-uid">--</span></div>
+                <div id="hud-orthanc-conn-badge" style="color: #38bdf8;">Orthanc PACS: http://localhost:8042</div>
+              </div>
+            </div>
+
+            <div class="dicom-canvas-stage">
+              <canvas id="dicom-simulator-canvas" width="560" height="440"></canvas>
+            </div>
+
+            <div>
+              <div class="dicom-hud-bottom" style="margin-bottom: 8px;">
+                <div>
+                  Série: <span id="hud-series-desc">Série Axial Principal</span> &bull;
+                  Corte (Slice): <strong id="hud-slice-label">12 / 48</strong>
+                </div>
+                <div>
+                  Janela (W/L): <strong id="hud-wl-label">W: 1500 / L: -500</strong> &bull;
+                  Zoom: <strong id="hud-zoom-label">100%</strong>
+                </div>
+              </div>
+
+              <div class="dicom-controls-bar">
+                <div class="slice-slider-wrap">
+                  <span style="font-size: 11.5px; color: var(--text-secondary); font-weight: 600;">Corte DICOM:</span>
+                  <input type="range" id="dicom-slice-slider" min="1" max="48" value="18" oninput="onDicomSliceChange(this.value)" />
+                </div>
+
+                <div class="action-btn-group">
+                  <button type="button" class="tool-btn" onclick="setDicomPreset('brain')">Crânio (80/40)</button>
+                  <button type="button" class="tool-btn" onclick="setDicomPreset('lung')">Pulmão (1500/-600)</button>
+                  <button type="button" class="tool-btn" onclick="setDicomPreset('bone')">Osso (2500/480)</button>
+                  <button type="button" class="tool-btn" onclick="setDicomPreset('abdomen')">Abdome (400/50)</button>
+                  <button type="button" class="tool-btn" onclick="toggleDicomInvert()">Inverter</button>
+                  <button type="button" class="btn btn-primary btn-sm" onclick="tryLoadLiveOrthancIframe()">
+                    Carregar Iframe Orthanc (:8042)
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Lado Direito (40% da largura): Painel do RIS / Prontuário e Editor Rico de Laudo -->
+      <div class="workspace-right-ris">
+        <!-- Cabeçalho Demográfico do Paciente -->
+        <div class="ris-patient-banner">
+          <div class="ris-patient-top">
+            <div>
+              <div id="ws-patient-name" class="ris-patient-name">--</div>
+              <div style="font-size: 12px; color: var(--text-secondary);">
+                Origem: <strong id="ws-origin-hospital">--</strong>
+              </div>
+            </div>
+            <div style="display: flex; gap: 6px; align-items: center;">
+              <span id="ws-priority-badge" class="priority-badge priority-routine">ROTINA</span>
+              <span id="ws-status-badge" class="status-badge status-awaiting">AGUARDANDO</span>
+            </div>
+          </div>
+
+          <div class="ris-demographics-grid">
+            <div class="demo-chip">
+              <div class="lbl">ID do Paciente (DICOM)</div>
+              <div id="ws-patient-id" class="val">--</div>
+            </div>
+            <div class="demo-chip">
+              <div class="lbl">Idade / Data Nasc.</div>
+              <div id="ws-patient-dob" class="val">--</div>
+            </div>
+            <div class="demo-chip">
+              <div class="lbl">Sexo / Tipo Sang.</div>
+              <div id="ws-patient-sex" class="val">--</div>
+            </div>
+            <div class="demo-chip">
+              <div class="lbl">Accession Number</div>
+              <div id="ws-accession-number" class="val">--</div>
+            </div>
+            <div class="demo-chip">
+              <div class="lbl">Data do Exame</div>
+              <div id="ws-study-date" class="val">--</div>
+            </div>
+            <div class="demo-chip">
+              <div class="lbl">Alergias Alertadas</div>
+              <div id="ws-patient-allergies" class="val" style="color: #fbbf24;">--</div>
+            </div>
+          </div>
+
+          <div class="clinical-indication-strip">
+            <strong>Indicação Clínica &amp; Prontuário:</strong>
+            <span id="ws-clinical-indication">--</span>
+            <button type="button" class="btn btn-ghost btn-sm" style="margin-left: 8px; padding: 2px 7px;" onclick="openCurrentPatientHistory()">
+              Ver Histórico &amp; FHIR
+            </button>
+          </div>
+        </div>
+
+        <!-- Corpo Rolável do Painel de Laudo -->
+        <div class="ris-editor-scroll">
+          <!-- Seletor de Templates de Laudo -->
+          <div class="template-selector-bar">
+            <label for="ws-template-select" style="font-size: 11.5px; font-weight: 700; color: var(--text-secondary); white-space: nowrap;">
+              📋 Template:
+            </label>
+            <select id="ws-template-select" class="filter-select"></select>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="applySelectedTemplate()">
+              Aplicar Máscara
+            </button>
+          </div>
+
+          <!-- Barra de Ferramentas do Editor Rico -->
+          <div class="rich-toolbar">
+            <button type="button" class="tool-btn" onclick="execEditorCmd('bold')" title="Negrito"><strong>B</strong></button>
+            <button type="button" class="tool-btn" onclick="execEditorCmd('italic')" title="Itálico"><em>I</em></button>
+            <button type="button" class="tool-btn" onclick="execEditorCmd('underline')" title="Sublinhado"><u>U</u></button>
+            <button type="button" class="tool-btn" onclick="execEditorCmd('insertUnorderedList')" title="Lista com Marcadores">&bull; Lista</button>
+            <button type="button" class="tool-btn" onclick="insertClinicalSnippet('Sem evidências de coleções agudas, efeito expansivo ou desvio das estruturas da linha média.')">
+              + Frase Padrão
+            </button>
+            <button type="button" class="tool-btn" onclick="insertClinicalSnippet('Medindo aproximadamente 1,2 x 0,9 cm nos seus maiores eixos axiais.')">
+              + Medida (cm)
+            </button>
+            <button type="button" class="tool-btn" onclick="openCurrentCaseFhirReport()">
+              🧬 Ver FHIR DiagnosticReport
+            </button>
+          </div>
+
+          <!-- Seção 1: Técnica -->
+          <div class="editor-section-box">
+            <label>
+              <span>1. Técnica do Exame</span>
+              <span style="color: var(--text-muted); font-weight: 500;">Protocolo de Aquisição</span>
+            </label>
+            <div id="editor-technique" class="rich-editable" contenteditable="true" spellcheck="true"></div>
+          </div>
+
+          <!-- Seção 2: Achados Radiológicos -->
+          <div class="editor-section-box">
+            <label>
+              <span>2. Achados Radiológicos (Corpo do Laudo)</span>
+              <span style="color: var(--text-muted); font-weight: 500;">Descrição Morfológica</span>
+            </label>
+            <div id="editor-findings" class="rich-editable findings-area" contenteditable="true" spellcheck="true"></div>
+          </div>
+
+          <!-- Seção 3: Impressão Diagnóstica / Conclusão -->
+          <div class="editor-section-box">
+            <label>
+              <span>3. Impressão Diagnóstica / Conclusão (FHIR DiagnosticReport.conclusion)</span>
+              <span style="color: #34d399; font-weight: 600;">Síntese Clínica</span>
+            </label>
+            <div id="editor-conclusion" class="rich-editable conclusion-area" contenteditable="true" spellcheck="true"></div>
+          </div>
+
+          <div id="ws-signature-banner" class="hidden" style="background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.35); border-radius: 6px; padding: 10px 12px; font-size: 12px; color: #34d399;">
+          </div>
+        </div>
+
+        <!-- Rodapé com Botões de Ação -->
+        <div class="ris-workspace-footer">
+          <button type="button" class="btn btn-ghost" onclick="backToPreviousWorklist()">
+            &larr; Voltar para Lista
+          </button>
+
+          <div class="action-btn-group">
+            <button type="button" class="btn btn-secondary" onclick="handleSaveDraft()">
+              💾 Salvar Rascunho
+            </button>
+            <button type="button" class="btn btn-emerald" onclick="handleFinalizeReport()">
+              ✍️ Finalizar Laudo / Assinar
+            </button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ========================================================================
+       MODAL 1: ATRIBUIR MÉDICO RADIOLOGISTA A UM EXAME
+       ======================================================================== -->
+  <div id="assign-modal" class="modal-backdrop hidden">
+    <div class="modal-card" style="max-width: 520px;">
+      <div class="modal-header">
+        <h3>Atribuir Médico Radiologista (FHIR ServiceRequest)</h3>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="closeModal('assign-modal')">&#10005;</button>
+      </div>
+      <div class="modal-body">
+        <p id="assign-modal-study-info" style="color: var(--text-secondary); margin-bottom: 16px; font-size: 13px;"></p>
+        <div class="form-group">
+          <label for="assign-modal-select">Selecione o Radiologista Responsável</label>
+          <select id="assign-modal-select" class="form-control"></select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-ghost" onclick="closeModal('assign-modal')">Cancelar</button>
+        <button type="button" class="btn btn-primary" onclick="confirmAssignRadiologist()">Confirmar Atribuição</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       MODAL 2: HISTÓRICO CLÍNICO DO PACIENTE & RECURSOS HL7 FHIR R4
+       ======================================================================== -->
+  <div id="history-fhir-modal" class="modal-backdrop hidden">
+    <div class="modal-card" style="max-width: 880px;">
+      <div class="modal-header">
+        <h3 id="history-modal-title">Prontuário Clínico &amp; Recursos HL7 FHIR R4</h3>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="closeModal('history-fhir-modal')">&#10005;</button>
+      </div>
+      <div class="modal-body" id="history-modal-content"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closeModal('history-fhir-modal')">Fechar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>

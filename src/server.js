@@ -6,6 +6,7 @@ const { URL } = require('node:url');
 const orthancConfig = require('./config/orthanc.config');
 const mockData = require('./data/mockFhirData');
 const orthancService = require('./services/orthancService');
+const cptacDataset = require('./services/cptacDatasetService');
 
 const PUBLIC_DIR = path.resolve(__dirname, '../public');
 
@@ -44,7 +45,7 @@ function parseJsonBody(req) {
       if (!raw) return resolve({});
       try {
         resolve(JSON.parse(raw));
-      } catch (err) {
+      } catch {
         reject(new Error('JSON inválido no corpo da requisição.'));
       }
     });
@@ -52,9 +53,6 @@ function parseJsonBody(req) {
   });
 }
 
-/**
- * Calcula métricas consolidadas do Dashboard Admin e distribuição de modalidades
- */
 function computeDashboardMetrics(cases) {
   const totalStudies = cases.length;
   const unassigned = cases.filter((c) => c.workflow.status === 'unassigned').length;
@@ -103,11 +101,17 @@ async function handleApiRequest(req, res, parsedUrl) {
     return res.end();
   }
 
-  // 1. Configuração do Sistema, Orthanc, Radiologistas e Templates de Laudo
+  // 1. Configuração do Sistema, Orthanc, Dataset CPTAC-CM, Radiologistas e Templates de Laudo
   if (method === 'GET' && pathname === '/api/config') {
     const orthancStatus = await orthancService.checkOrthancStatus();
+    const cptacStudies = cptacDataset.loadCptacDatasetFromCsv();
     return sendJson(res, 200, {
       orthancConfig: orthancConfig.orthanc,
+      datasetConfig: {
+        ...orthancConfig.dataset,
+        loadedStudiesCount: cptacStudies.length,
+        totalInstances: cptacStudies.reduce((acc, s) => acc + s.numberOfInstances, 0)
+      },
       orthancStatus,
       radiologists: mockData.RADIOLOGISTS,
       reportTemplates: mockData.REPORT_TEMPLATES
@@ -120,13 +124,91 @@ async function handleApiRequest(req, res, parsedUrl) {
     return sendJson(res, 200, status);
   }
 
-  // 3. Camada de Proxy/Integração Orthanc: GET /studies e GET /api/orthanc/studies
+  // 3. Leitura direta de corte DICOM real (.dcm) do Dataset CPTAC-CM
+  const sliceMatch = pathname.match(/^\/api\/cptac\/slice\/([^/]+)$/);
+  if (method === 'GET' && sliceMatch) {
+    const caseId = decodeURIComponent(sliceMatch[1]);
+    const rawCase = mockData.getRawCaseById(caseId);
+    if (!rawCase || !rawCase.isRealCptacDataset) {
+      return sendJson(res, 404, { error: `Estudo '${caseId}' não possui arquivos DICOM locais no CPTAC-CM.` });
+    }
+
+    const seriesIndex = Math.max(
+      0,
+      Math.min(rawCase.study.series.length - 1, Number(parsedUrl.searchParams.get('seriesIndex') || 0))
+    );
+    const activeSeries = rawCase.study.series[seriesIndex];
+    const dcmFiles = cptacDataset.listDcmFilesInSeriesDir(activeSeries.absSeriesDir);
+
+    if (dcmFiles.length === 0) {
+      return sendJson(res, 404, {
+        error: `Nenhum arquivo .dcm encontrado na pasta da série: ${activeSeries.absSeriesDir}`
+      });
+    }
+
+    const requestedSlice = parsedUrl.searchParams.get('slice');
+    const sliceIdx =
+      requestedSlice !== null
+        ? Math.max(0, Math.min(dcmFiles.length - 1, Number(requestedSlice) - 1))
+        : Math.floor(dcmFiles.length / 2);
+
+    const wwParam = parsedUrl.searchParams.get('ww');
+    const wlParam = parsedUrl.searchParams.get('wl');
+
+    const sliceData = cptacDataset.readAndWindowDicomSlice(
+      dcmFiles[sliceIdx],
+      wwParam !== null && wwParam !== '' ? Number(wwParam) : null,
+      wlParam !== null && wlParam !== '' ? Number(wlParam) : null
+    );
+
+    return sendJson(res, 200, {
+      caseId: rawCase.caseId,
+      studyInstanceUID: rawCase.study.studyInstanceUID,
+      seriesIndex,
+      seriesNumber: activeSeries.number,
+      seriesDescription: activeSeries.description,
+      seriesModality: activeSeries.modality,
+      sliceNumber: sliceIdx + 1,
+      totalSlices: dcmFiles.length,
+      ...sliceData
+    });
+  }
+
+  // 4. Upload sob demanda de um estudo CPTAC-CM do disco local para o Orthanc PACS (:8042)
+  const uploadMatch = pathname.match(/^\/api\/cptac\/upload\/([^/]+)$/);
+  if (method === 'POST' && uploadMatch) {
+    const caseId = decodeURIComponent(uploadMatch[1]);
+    const body = await parseJsonBody(req);
+    try {
+      const uploadResult = await cptacDataset.uploadCptacStudyToOrthanc(caseId, {
+        seriesIndex: body.seriesIndex,
+        maxInstances: body.maxInstances || 60
+      });
+      let updatedItem = null;
+      if (uploadResult.orthancStudyId) {
+        updatedItem = mockData.linkOrthancStudyId(caseId, uploadResult.orthancStudyId);
+      } else {
+        updatedItem = mockData.getHydratedCaseById(caseId);
+      }
+      return sendJson(res, 200, {
+        message: `Enviados ${uploadResult.uploadedInstances} cortes DICOM reais do CPTAC-CM para o Orthanc PACS!`,
+        uploadResult,
+        item: updatedItem
+      });
+    } catch (err) {
+      return sendJson(res, 502, {
+        error: `Não foi possível enviar para o Orthanc em ${orthancConfig.orthanc.url}: ${err.message}`
+      });
+    }
+  }
+
+  // 5. Camada de Proxy/Integração Orthanc: GET /studies e GET /api/orthanc/studies
   if (method === 'GET' && (pathname === '/api/orthanc/studies' || pathname === '/studies')) {
     const result = await orthancService.getStudiesWithFallback();
     return sendJson(res, 200, result);
   }
 
-  // 4. Camada de Proxy/Integração Orthanc: GET /patients/:id e GET /api/orthanc/patients/:id
+  // 6. Camada de Proxy/Integração Orthanc: GET /patients/:id e GET /api/orthanc/patients/:id
   const patientMatch = pathname.match(/^\/(?:api\/orthanc\/)?patients\/([^/]+)$/);
   if (method === 'GET' && patientMatch) {
     const patientId = decodeURIComponent(patientMatch[1]);
@@ -137,7 +219,7 @@ async function handleApiRequest(req, res, parsedUrl) {
     return sendJson(res, 200, result);
   }
 
-  // 5. Worklist Geral + Métricas do Dashboard + Sincronização opcional com Orthanc
+  // 7. Worklist Geral + Métricas do Dashboard + Sincronização opcional com Orthanc
   if (method === 'GET' && pathname === '/api/worklist') {
     if (parsedUrl.searchParams.get('syncOrthanc') === 'true') {
       await orthancService.getStudiesWithFallback();
@@ -148,6 +230,7 @@ async function handleApiRequest(req, res, parsedUrl) {
       timestamp: new Date().toISOString(),
       orthancUrl: orthancConfig.orthanc.url,
       defaultViewer: orthancConfig.orthanc.defaultViewer,
+      datasetPath: orthancConfig.dataset.rootPath,
       metrics,
       radiologists: mockData.RADIOLOGISTS,
       reportTemplates: mockData.REPORT_TEMPLATES,
@@ -155,7 +238,7 @@ async function handleApiRequest(req, res, parsedUrl) {
     });
   }
 
-  // 6. Detalhe de um item específico da Worklist
+  // 8. Detalhe de um item específico da Worklist
   const worklistItemMatch = pathname.match(/^\/api\/worklist\/([^/]+)$/);
   if (method === 'GET' && worklistItemMatch) {
     const caseId = decodeURIComponent(worklistItemMatch[1]);
@@ -166,7 +249,7 @@ async function handleApiRequest(req, res, parsedUrl) {
     return sendJson(res, 200, item);
   }
 
-  // 7. Atribuir Médico Radiologista a um Exame
+  // 9. Atribuir Médico Radiologista a um Exame
   const assignMatch = pathname.match(/^\/api\/worklist\/([^/]+)\/assign$/);
   if (method === 'POST' && assignMatch) {
     const caseId = decodeURIComponent(assignMatch[1]);
@@ -182,7 +265,7 @@ async function handleApiRequest(req, res, parsedUrl) {
     });
   }
 
-  // 8. Salvar Rascunho de Laudo (DiagnosticReport status: preliminary/partial)
+  // 10. Salvar Rascunho de Laudo
   const draftMatch = pathname.match(/^\/api\/reports\/([^/]+)\/draft$/);
   if (method === 'POST' && draftMatch) {
     const caseId = decodeURIComponent(draftMatch[1]);
@@ -199,7 +282,7 @@ async function handleApiRequest(req, res, parsedUrl) {
     });
   }
 
-  // 9. Finalizar / Assinar Laudo (DiagnosticReport status: final)
+  // 11. Finalizar / Assinar Laudo
   const finalizeMatch = pathname.match(/^\/api\/reports\/([^/]+)\/finalize$/);
   if (method === 'POST' && finalizeMatch) {
     const caseId = decodeURIComponent(finalizeMatch[1]);
@@ -216,7 +299,7 @@ async function handleApiRequest(req, res, parsedUrl) {
     });
   }
 
-  // 10. Endpoints HL7 FHIR R4 nativos (/api/fhir/Bundle, /api/fhir/Patient, /api/fhir/ServiceRequest, /api/fhir/ImagingStudy, /api/fhir/DiagnosticReport)
+  // 12. Endpoints HL7 FHIR R4 nativos
   if (method === 'GET' && pathname === '/api/fhir/Bundle') {
     return sendJson(res, 200, mockData.buildFhirBundle(), 'application/fhir+json; charset=utf-8');
   }
@@ -261,7 +344,6 @@ function serveStaticFile(req, res, parsedUrl) {
 
   fs.stat(filePath, (err, stats) => {
     if (err || !stats.isFile()) {
-      // Fallback SPA para index.html
       const indexFile = path.join(PUBLIC_DIR, 'index.html');
       fs.readFile(indexFile, (readErr, content) => {
         if (readErr) {
@@ -317,12 +399,13 @@ if (require.main === module) {
   const { port, host } = orthancConfig.server;
   server.listen(port, host, async () => {
     const orthancStatus = await orthancService.checkOrthancStatus();
+    const cptacStudies = cptacDataset.loadCptacDatasetFromCsv();
     console.log('==================================================================');
     console.log('  SynapseRIS — Sistema de Informação em Radiologia & Fluxo PACS');
     console.log(`  URL da Aplicação : http://localhost:${port}`);
     console.log(`  Orthanc PACS URL : ${orthancConfig.orthanc.url} (${orthancStatus.online ? 'ONLINE' : 'MODO DEMO ATIVO'})`);
-    console.log(`  Viewer Padrão    : ${orthancConfig.orthanc.defaultViewer}`);
-    console.log(`  Padrão de Dados  : HL7 FHIR R4 + DICOM Standard`);
+    console.log(`  Dataset CPTAC-CM : ${cptacStudies.length} estudos reais indexados (${orthancConfig.dataset.rootPath})`);
+    console.log(`  Padrão de Dados  : HL7 FHIR R4 + DICOM Part 10 Nativo`);
     console.log('==================================================================');
   });
 }

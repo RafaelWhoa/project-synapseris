@@ -352,11 +352,11 @@
               />
             </div>
 
-            <!-- Filtro por Período -->
+            <!-- Filtro por Período / Coorte -->
             <select id="rad-filter-period" class="filter-select" onchange="renderRadiologistWorklist()">
-              <option value="ALL">Período: Todos os Exames</option>
-              <option value="TODAY">Hoje (02/11/2026)</option>
-              <option value="LAST_3_DAYS">Últimos 3 Dias</option>
+              <option value="ALL">Período / Coorte: Todos os Exames</option>
+              <option value="CPTAC_ONLY">Coorte Real TCIA CPTAC-CM (DICOM Local)</option>
+              <option value="TODAY">Recebidos Hoje</option>
               <option value="LAST_7_DAYS">Últimos 7 Dias</option>
               <option value="LAST_30_DAYS">Últimos 30 Dias</option>
             </select>
@@ -422,11 +422,14 @@
         <div class="viewer-toolbar">
           <div class="viewer-toolbar-left">
             <span class="modality-badge mod-CT" id="ws-viewer-modality-badge">CT</span>
+            <select id="ws-series-select" class="filter-select" onchange="onChangeActiveSeries(this.value)" title="Selecionar Série DICOM do Exame">
+              <option value="0">Série Principal</option>
+            </select>
             <select id="ws-viewer-engine-select" class="filter-select" onchange="onChangeViewerEngine(this.value)">
+              <option value="simulator">Leitor DICOM Nativo CPTAC-CM (.dcm direto do disco)</option>
               <option value="stone-webviewer">Orthanc Stone WebViewer (:8042)</option>
               <option value="ohif">OHIF DICOM Viewer (:8042)</option>
               <option value="explorer.html">Orthanc Explorer (:8042)</option>
-              <option value="simulator">Preview Clínico Multi-Slice (Simulador Local)</option>
             </select>
             <div id="ws-viewer-url-display" class="viewer-url-bar" title="URL do DICOM Viewer do Orthanc">
               http://localhost:8042/stone-webviewer/index.html?study=...
@@ -434,11 +437,14 @@
           </div>
 
           <div class="viewer-toolbar-right">
+            <button type="button" class="btn btn-emerald btn-sm" onclick="uploadCurrentStudyToOrthanc()" id="ws-upload-orthanc-btn" title="Envia os arquivos .dcm reais desta série para o Orthanc na porta 8042">
+              📤 Enviar p/ Orthanc (:8042)
+            </button>
             <button type="button" class="btn btn-secondary btn-sm" onclick="toggleViewerMode()" id="ws-toggle-iframe-btn">
-              Alternar Iframe / Simulador
+              Alternar Iframe / Leitor Local
             </button>
             <a id="ws-open-external-viewer" href="http://localhost:8042" target="_blank" rel="noopener" class="btn btn-primary btn-sm">
-              Abrir no Orthanc &#8599;
+              Abrir Orthanc &#8599;
             </a>
           </div>
         </div>
@@ -468,35 +474,37 @@
             </div>
 
             <div class="dicom-canvas-stage">
-              <canvas id="dicom-simulator-canvas" width="560" height="440"></canvas>
+              <canvas id="dicom-simulator-canvas" width="512" height="512"></canvas>
             </div>
 
             <div>
               <div class="dicom-hud-bottom" style="margin-bottom: 8px;">
                 <div>
                   Série: <span id="hud-series-desc">Série Axial Principal</span> &bull;
-                  Corte (Slice): <strong id="hud-slice-label">12 / 48</strong>
+                  Corte (Slice): <strong id="hud-slice-label">1 / 145</strong> &bull;
+                  Arquivo: <span id="hud-file-name">--</span>
                 </div>
                 <div>
-                  Janela (W/L): <strong id="hud-wl-label">W: 1500 / L: -500</strong> &bull;
-                  Zoom: <strong id="hud-zoom-label">100%</strong>
+                  Janela (W/L): <strong id="hud-wl-label">Auto DICOM</strong> &bull;
+                  Matriz: <strong id="hud-zoom-label">512x512</strong>
                 </div>
               </div>
 
               <div class="dicom-controls-bar">
                 <div class="slice-slider-wrap">
-                  <span style="font-size: 11.5px; color: var(--text-secondary); font-weight: 600;">Corte DICOM:</span>
-                  <input type="range" id="dicom-slice-slider" min="1" max="48" value="18" oninput="onDicomSliceChange(this.value)" />
+                  <span style="font-size: 11.5px; color: var(--text-secondary); font-weight: 600;">Corte DICOM (.dcm):</span>
+                  <input type="range" id="dicom-slice-slider" min="1" max="145" value="72" oninput="onDicomSliceChange(this.value)" />
                 </div>
 
                 <div class="action-btn-group">
-                  <button type="button" class="tool-btn" onclick="setDicomPreset('brain')">Crânio (80/40)</button>
+                  <button type="button" class="tool-btn" onclick="setDicomPreset('auto')">Auto (Tag DICOM)</button>
                   <button type="button" class="tool-btn" onclick="setDicomPreset('lung')">Pulmão (1500/-600)</button>
+                  <button type="button" class="tool-btn" onclick="setDicomPreset('abdomen')">Partes Moles (400/50)</button>
                   <button type="button" class="tool-btn" onclick="setDicomPreset('bone')">Osso (2500/480)</button>
-                  <button type="button" class="tool-btn" onclick="setDicomPreset('abdomen')">Abdome (400/50)</button>
+                  <button type="button" class="tool-btn" onclick="setDicomPreset('brain')">Crânio (80/40)</button>
                   <button type="button" class="tool-btn" onclick="toggleDicomInvert()">Inverter</button>
                   <button type="button" class="btn btn-primary btn-sm" onclick="tryLoadLiveOrthancIframe()">
-                    Carregar Iframe Orthanc (:8042)
+                    Abrir Iframe Orthanc (:8042)
                   </button>
                 </div>
               </div>

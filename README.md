@@ -14,8 +14,11 @@ npm start
 # ou diretamente:
 node src/server.js
 
-# Executar suíte de verificação (DICOM, Orthanc Proxy e HL7 FHIR R4)
+# Executar suíte de verificação (DICOM, CPTAC-CM, Orthanc Proxy e HL7 FHIR R4)
 npm test
+
+# (Opcional) Alimentar o servidor Orthanc PACS (:8042) com estudos reais do dataset CPTAC-CM
+npm run seed:orthanc
 ```
 
 Acesse no navegador:

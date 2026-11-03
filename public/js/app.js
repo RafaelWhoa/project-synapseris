@@ -31,14 +31,16 @@ const appState = {
   activeCaseId: null,
   assigningCaseId: null,
   viewerMode: 'simulator', // 'iframe' | 'simulator'
-  selectedViewerEngine: 'stone-webviewer',
+  selectedViewerEngine: 'simulator',
   dicomSim: {
+    seriesIndex: 0,
     slice: 18,
     maxSlices: 48,
-    windowWidth: 1500,
-    windowLevel: -500,
+    windowWidth: null,
+    windowLevel: null,
     inverted: false,
-    zoom: 1.0
+    zoom: 1.0,
+    fetchAbortController: null
   }
 };
 
@@ -544,12 +546,16 @@ function renderRadiologistWorklist() {
     }
 
     if (periodFilter !== 'ALL') {
-      const studyDate = new Date(item.dicom.StudyDate);
-      const diffDays = (refNow - studyDate) / (1000 * 60 * 60 * 24);
-      if (periodFilter === 'TODAY' && item.dicom.StudyDate.slice(0, 10) !== '2026-11-02') return false;
-      if (periodFilter === 'LAST_3_DAYS' && diffDays > 3.5) return false;
-      if (periodFilter === 'LAST_7_DAYS' && diffDays > 7.5) return false;
-      if (periodFilter === 'LAST_30_DAYS' && diffDays > 30.5) return false;
+      if (periodFilter === 'CPTAC_ONLY') {
+        if (!item.isRealCptacDataset) return false;
+      } else {
+        const studyDate = new Date(item.dicom.StudyDate);
+        const diffDays = (refNow - studyDate) / (1000 * 60 * 60 * 24);
+        if (periodFilter === 'TODAY' && item.dicom.StudyDate.slice(0, 10) !== '2026-11-02') return false;
+        if (periodFilter === 'LAST_3_DAYS' && diffDays > 3.5) return false;
+        if (periodFilter === 'LAST_7_DAYS' && diffDays > 7.5) return false;
+        if (periodFilter === 'LAST_30_DAYS' && diffDays > 30.5) return false;
+      }
     }
 
     if (query) {
@@ -709,7 +715,20 @@ function setupWorkspaceDicomViewer(item) {
     modBadge.textContent = item.dicom.Modality;
   }
 
-  // Atualiza HUD do Simulador / Placeholder
+  // Popula seletor de séries reais do estudo
+  const seriesList = item.fhir.ImagingStudy.series || [];
+  const seriesSelect = document.getElementById('ws-series-select');
+  if (seriesSelect) {
+    seriesSelect.innerHTML = seriesList
+      .map(
+        (s, idx) =>
+          `<option value="${idx}">[${s.modality.code}] Série ${s.number}: ${escapeHtml(s.description)} (${s.numberOfInstances} img)</option>`
+      )
+      .join('');
+    seriesSelect.value = '0';
+  }
+
+  // Atualiza HUD do Visualizador DICOM
   setText('hud-patient-name', item.dicom.PatientName);
   setText('hud-patient-id', item.dicom.PatientID);
   setText('hud-patient-dob', formatDateBR(item.dicom.PatientBirthDate));
@@ -718,33 +737,101 @@ function setupWorkspaceDicomViewer(item) {
   setText('hud-study-desc', item.dicom.StudyDescription);
   setText('hud-study-uid', item.dicom.StudyInstanceUID);
 
-  const firstSeries = item.fhir.ImagingStudy.series?.[0];
-  setText('hud-series-desc', firstSeries ? firstSeries.description : item.dicom.StudyDescription);
+  appState.dicomSim.seriesIndex = 0;
+  appState.dicomSim.windowWidth = null;
+  appState.dicomSim.windowLevel = null;
+  appState.dicomSim.inverted = false;
 
-  // Ajusta preset padrão conforme modalidade
-  if (item.dicom.Modality === 'CT') {
-    if (item.dicom.StudyDescription.toUpperCase().includes('CRÂNIO')) {
-      setDicomPreset('brain', false);
-    } else if (item.dicom.StudyDescription.toUpperCase().includes('ABDOME')) {
-      setDicomPreset('abdomen', false);
-    } else {
-      setDicomPreset('lung', false);
-    }
-  } else if (item.dicom.Modality === 'MR') {
-    appState.dicomSim.windowWidth = 600;
-    appState.dicomSim.windowLevel = 300;
-  } else {
-    appState.dicomSim.windowWidth = 2000;
-    appState.dicomSim.windowLevel = 500;
+  const firstSeries = seriesList[0];
+  const totalSlices = firstSeries ? Math.max(1, firstSeries.numberOfInstances) : 48;
+  const midSlice = Math.max(1, Math.floor(totalSlices / 2));
+
+  appState.dicomSim.maxSlices = totalSlices;
+  appState.dicomSim.slice = midSlice;
+
+  const slider = document.getElementById('dicom-slice-slider');
+  if (slider) {
+    slider.max = totalSlices;
+    slider.value = midSlice;
   }
 
-  appState.dicomSim.slice = 18;
-  appState.dicomSim.inverted = false;
-  const slider = document.getElementById('dicom-slice-slider');
-  if (slider) slider.value = 18;
+  setText('hud-series-desc', firstSeries ? firstSeries.description : item.dicom.StudyDescription);
+
+  const uploadBtn = document.getElementById('ws-upload-orthanc-btn');
+  if (uploadBtn) {
+    uploadBtn.classList.toggle('hidden', !item.isRealCptacDataset);
+  }
 
   updateViewerUrlAndMode(item);
   drawDicomSimulatorCanvas();
+}
+
+function onChangeActiveSeries(seriesIdxStr) {
+  const item = appState.worklist.find((c) => c.caseId === appState.activeCaseId);
+  if (!item) return;
+
+  const idx = Number(seriesIdxStr) || 0;
+  const seriesList = item.fhir.ImagingStudy.series || [];
+  const chosen = seriesList[idx];
+  if (!chosen) return;
+
+  appState.dicomSim.seriesIndex = idx;
+  appState.dicomSim.windowWidth = null;
+  appState.dicomSim.windowLevel = null;
+
+  const totalSlices = Math.max(1, chosen.numberOfInstances || 1);
+  const midSlice = Math.max(1, Math.floor(totalSlices / 2));
+  appState.dicomSim.maxSlices = totalSlices;
+  appState.dicomSim.slice = midSlice;
+
+  const slider = document.getElementById('dicom-slice-slider');
+  if (slider) {
+    slider.max = totalSlices;
+    slider.value = midSlice;
+  }
+
+  setText('hud-series-desc', chosen.description);
+  drawDicomSimulatorCanvas();
+}
+
+async function uploadCurrentStudyToOrthanc() {
+  const item = appState.worklist.find((c) => c.caseId === appState.activeCaseId);
+  if (!item || !item.isRealCptacDataset) return;
+
+  const btn = document.getElementById('ws-upload-orthanc-btn');
+  const originalText = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ Enviando .dcm p/ Orthanc...';
+  }
+
+  showToast(`Enviando cortes DICOM reais da série ativa (${item.dicom.PatientID}) para ${appState.orthancConfig.url}...`);
+
+  try {
+    const res = await fetch(`/api/cptac/upload/${encodeURIComponent(item.caseId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        seriesIndex: appState.dicomSim.seriesIndex,
+        maxInstances: 60
+      })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Falha ao enviar para o Orthanc.');
+
+    if (data.item) {
+      updateCaseInLocalState(data.item, null);
+    }
+    showToast(`✔ ${data.message}`);
+    updateViewerUrlAndMode(data.item || item);
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText || '📤 Enviar p/ Orthanc (:8042)';
+    }
+  }
 }
 
 function updateViewerUrlAndMode(item) {
@@ -766,15 +853,14 @@ function updateViewerUrlAndMode(item) {
 
   const connBadge = document.getElementById('hud-orthanc-conn-badge');
   if (connBadge) {
-    connBadge.textContent = appState.orthancStatus.online
-      ? `● Orthanc PACS Online (${appState.orthancConfig.url}) — Pronto para Iframe / Stone WebViewer`
+    connBadge.textContent = item.isRealCptacDataset
+      ? `● Dataset Real CPTAC-CM Ativo (.dcm local) | Orthanc: ${targetUrl}`
       : `● Orthanc Viewer URL: ${targetUrl}`;
   }
 
   const iframeEl = document.getElementById('orthanc-viewer-iframe');
   const placeholderEl = document.getElementById('orthanc-viewer-placeholder');
 
-  // Se o estudo foi sincronizado diretamente do Orthanc ou o usuário escolheu modo iframe
   if (appState.viewerMode === 'iframe' && engine !== 'simulator') {
     iframeEl.src = targetUrl;
     iframeEl.classList.remove('hidden');
@@ -789,18 +875,26 @@ function onChangeViewerEngine(engineValue) {
   appState.selectedViewerEngine = engineValue;
   if (engineValue === 'simulator') {
     appState.viewerMode = 'simulator';
+  } else {
+    appState.viewerMode = 'iframe';
   }
   updateViewerUrlAndMode();
+  if (appState.viewerMode === 'simulator') {
+    drawDicomSimulatorCanvas();
+  }
 }
 
 function toggleViewerMode() {
-  appState.viewerMode = appState.viewerMode === 'iframe' ? 'simulator' : 'iframe';
-  updateViewerUrlAndMode();
   if (appState.viewerMode === 'iframe') {
-    showToast('Carregando URL do DICOM Viewer Orthanc no container (60%)...');
-  } else {
-    showToast('Exibindo Simulador Clínico DICOM Multi-Slice.');
+    appState.viewerMode = 'simulator';
+    appState.selectedViewerEngine = 'simulator';
+    const sel = document.getElementById('ws-viewer-engine-select');
+    if (sel) sel.value = 'simulator';
+    updateViewerUrlAndMode();
     drawDicomSimulatorCanvas();
+    showToast('Exibindo Leitor DICOM Nativo CPTAC-CM (.dcm direto do disco).');
+  } else {
+    tryLoadLiveOrthancIframe();
   }
 }
 
@@ -812,11 +906,11 @@ function tryLoadLiveOrthancIframe() {
     if (sel) sel.value = 'stone-webviewer';
   }
   updateViewerUrlAndMode();
-  showToast(`Container iframe apontado para ${ document.getElementById('ws-viewer-url-display')?.textContent }`);
+  showToast(`Container iframe apontado para ${document.getElementById('ws-viewer-url-display')?.textContent}`);
 }
 
 /* ==========================================================================
-   SIMULADOR VISUAL DICOM INTERATIVO (CANVAS RADIOLÓGICO)
+   LEITOR NATIVO DE ARQUIVOS DICOM (.DCM) DO DATASET CPTAC-CM + SIMULADOR
    ========================================================================== */
 function onDicomSliceChange(val) {
   appState.dicomSim.slice = Number(val);
@@ -824,15 +918,20 @@ function onDicomSliceChange(val) {
 }
 
 function setDicomPreset(preset, redraw = true) {
-  const presets = {
-    brain: { w: 80, l: 40 },
-    lung: { w: 1500, l: -600 },
-    bone: { w: 2500, l: 480 },
-    abdomen: { w: 400, l: 50 }
-  };
-  const p = presets[preset] || presets.lung;
-  appState.dicomSim.windowWidth = p.w;
-  appState.dicomSim.windowLevel = p.l;
+  if (preset === 'auto') {
+    appState.dicomSim.windowWidth = null;
+    appState.dicomSim.windowLevel = null;
+  } else {
+    const presets = {
+      brain: { w: 80, l: 40 },
+      lung: { w: 1500, l: -600 },
+      bone: { w: 2500, l: 480 },
+      abdomen: { w: 400, l: 50 }
+    };
+    const p = presets[preset] || presets.lung;
+    appState.dicomSim.windowWidth = p.w;
+    appState.dicomSim.windowLevel = p.l;
+  }
   if (redraw) drawDicomSimulatorCanvas();
 }
 
@@ -850,6 +949,7 @@ function setupCanvasWheelListener() {
       e.preventDefault();
       const delta = e.deltaY > 0 ? 1 : -1;
       const next = Math.max(1, Math.min(appState.dicomSim.maxSlices, appState.dicomSim.slice + delta));
+      if (next === appState.dicomSim.slice) return;
       appState.dicomSim.slice = next;
       const slider = document.getElementById('dicom-slice-slider');
       if (slider) slider.value = next;
@@ -859,158 +959,160 @@ function setupCanvasWheelListener() {
   );
 }
 
-function drawDicomSimulatorCanvas() {
+async function drawDicomSimulatorCanvas() {
+  const item = appState.worklist.find((c) => c.caseId === appState.activeCaseId);
+  if (!item) return;
+
+  // Se for um estudo real da coorte CPTAC-CM, lê os pixels reais do arquivo .dcm no servidor!
+  if (item.isRealCptacDataset) {
+    await fetchAndRenderRealCptacSlice(item);
+    return;
+  }
+
+  renderSyntheticDicomFallback(item);
+}
+
+async function fetchAndRenderRealCptacSlice(item) {
+  const canvas = document.getElementById('dicom-simulator-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+
+  if (appState.dicomSim.fetchAbortController) {
+    appState.dicomSim.fetchAbortController.abort();
+  }
+  const controller = new AbortController();
+  appState.dicomSim.fetchAbortController = controller;
+
+  const params = new URLSearchParams({
+    seriesIndex: String(appState.dicomSim.seriesIndex || 0),
+    slice: String(appState.dicomSim.slice || 1)
+  });
+  if (appState.dicomSim.windowWidth !== null) {
+    params.set('ww', String(appState.dicomSim.windowWidth));
+  }
+  if (appState.dicomSim.windowLevel !== null) {
+    params.set('wl', String(appState.dicomSim.windowLevel));
+  }
+
+  try {
+    const res = await fetch(`/api/cptac/slice/${encodeURIComponent(item.caseId)}?${params.toString()}`, {
+      signal: controller.signal
+    });
+    if (!res.ok) {
+      renderSyntheticDicomFallback(item);
+      return;
+    }
+
+    const sliceData = await res.json();
+    const {
+      rows,
+      cols,
+      pixelsBase64,
+      windowCenter,
+      windowWidth,
+      sliceNumber,
+      totalSlices,
+      seriesDescription,
+      seriesModality,
+      fileName
+    } = sliceData;
+
+    appState.dicomSim.maxSlices = totalSlices;
+    const slider = document.getElementById('dicom-slice-slider');
+    if (slider && Number(slider.max) !== totalSlices) {
+      slider.max = totalSlices;
+    }
+
+    setText('hud-series-desc', seriesDescription);
+    setText('hud-slice-label', `${sliceNumber} / ${totalSlices}`);
+    setText('hud-file-name', fileName || '--');
+    setText('hud-wl-label', `W: ${windowWidth} / L: ${windowCenter}`);
+    setText('hud-zoom-label', `${cols}x${rows} px (16-bit DICOM)`);
+
+    // Decodifica buffer Base64 de 8 bits janelado
+    const binaryStr = atob(pixelsBase64);
+    const numPixels = rows * cols;
+
+    const offCanvas = document.createElement('canvas');
+    offCanvas.width = cols;
+    offCanvas.height = rows;
+    const offCtx = offCanvas.getContext('2d');
+    const imgData = offCtx.createImageData(cols, rows);
+    const rgba = imgData.data;
+
+    const isInverted = appState.dicomSim.inverted;
+    const isPetSeries = seriesModality === 'PT';
+
+    for (let i = 0; i < numPixels; i++) {
+      let val = binaryStr.charCodeAt(i) || 0;
+      if (isInverted) val = 255 - val;
+
+      const idx4 = i * 4;
+      if (isPetSeries && !isInverted) {
+        // Mapa de cores Hot-Iron / Metabólico para séries PET (PT)
+        rgba[idx4] = Math.min(255, val * 1.6);
+        rgba[idx4 + 1] = val > 90 ? Math.min(255, (val - 90) * 1.8) : 0;
+        rgba[idx4 + 2] = val > 180 ? Math.min(255, (val - 180) * 3.0) : Math.min(60, val * 0.4);
+        rgba[idx4 + 3] = 255;
+      } else {
+        rgba[idx4] = val;
+        rgba[idx4 + 1] = val;
+        rgba[idx4 + 2] = val;
+        rgba[idx4 + 3] = 255;
+      }
+    }
+
+    offCtx.putImageData(imgData, 0, 0);
+
+    // Desenha centralizado e escalado em alta nitidez no canvas 512x512
+    ctx.save();
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(offCanvas, 0, 0, canvas.width, canvas.height);
+
+    // Marcadores de orientação anatômica R / L
+    ctx.fillStyle = '#38bdf8';
+    ctx.font = 'bold 13px "JetBrains Mono", monospace';
+    ctx.fillText('R', 14, canvas.height / 2);
+    ctx.fillText('L', canvas.width - 24, canvas.height / 2);
+    ctx.restore();
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      renderSyntheticDicomFallback(item);
+    }
+  }
+}
+
+function renderSyntheticDicomFallback(item) {
   const canvas = document.getElementById('dicom-simulator-canvas');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   const w = canvas.width;
   const h = canvas.height;
 
-  const item = appState.worklist.find((c) => c.caseId === appState.activeCaseId);
   const modality = item?.dicom.Modality || 'CT';
-  const desc = (item?.dicom.StudyDescription || '').toUpperCase();
   const slice = appState.dicomSim.slice;
-  const phase = (slice - 24) / 24; // -1 a +1
-
   setText('hud-slice-label', `${slice} / ${appState.dicomSim.maxSlices}`);
-  setText('hud-wl-label', `W: ${appState.dicomSim.windowWidth} / L: ${appState.dicomSim.windowLevel}`);
+  setText('hud-file-name', 'Simulador Vetorial');
 
   ctx.save();
   ctx.fillStyle = appState.dicomSim.inverted ? '#f1f5f9' : '#020409';
   ctx.fillRect(0, 0, w, h);
 
-  // Grade milimetrada sutil de estação PACS
-  ctx.strokeStyle = appState.dicomSim.inverted ? 'rgba(0,0,0,0.08)' : 'rgba(56, 189, 248, 0.08)';
-  ctx.lineWidth = 1;
-  for (let x = 0; x < w; x += 40) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, h);
-    ctx.stroke();
-  }
-  for (let y = 0; y < h; y += 40) {
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(w, y);
-    ctx.stroke();
-  }
-
   const cx = w / 2;
   const cy = h / 2;
-  const scaleRadius = Math.max(0.55, 1 - Math.abs(phase) * 0.35);
 
-  if (modality === 'CT' && !desc.includes('CRÂNIO')) {
-    // Corte Axial Torácico / Abdominal Tomográfico
-    ctx.strokeStyle = appState.dicomSim.inverted ? '#1e293b' : '#cbd5e1';
-    ctx.lineWidth = 6;
-    ctx.fillStyle = appState.dicomSim.inverted ? '#cbd5e1' : '#1e293b';
-    ctx.beginPath();
-    ctx.ellipse(cx, cy, 175 * scaleRadius, 125 * scaleRadius, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    // Campos pulmonares direito e esquerdo
-    ctx.fillStyle = appState.dicomSim.inverted ? '#f8fafc' : '#060a12';
-    ctx.beginPath();
-    ctx.ellipse(cx - 65 * scaleRadius, cy - 5, 58 * scaleRadius, 82 * scaleRadius, 0.12, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.ellipse(cx + 65 * scaleRadius, cy - 5, 54 * scaleRadius, 80 * scaleRadius, -0.12, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Coração / Mediastino
-    ctx.fillStyle = appState.dicomSim.inverted ? '#475569' : '#94a3b8';
-    ctx.beginPath();
-    ctx.ellipse(cx + 12, cy - 12, 34 * scaleRadius, 42 * scaleRadius, 0.25, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Corpo vertebral + arcos costais hiperdensos
-    ctx.fillStyle = appState.dicomSim.inverted ? '#0f172a' : '#f8fafc';
-    ctx.beginPath();
-    ctx.arc(cx, cy + 72 * scaleRadius, 18 * scaleRadius, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Trama vascular pulmonar
-    ctx.strokeStyle = appState.dicomSim.inverted ? '#334155' : 'rgba(148, 163, 184, 0.45)';
-    ctx.lineWidth = 1.5;
-    for (let i = 0; i < 6; i++) {
-      const angle = (i / 6) * Math.PI * 1.4 - 0.7 + phase * 0.4;
-      ctx.beginPath();
-      ctx.moveTo(cx - 35 * scaleRadius, cy);
-      ctx.lineTo(cx - (65 + Math.cos(angle) * 35) * scaleRadius, cy + Math.sin(angle) * 45 * scaleRadius);
-      ctx.stroke();
-    }
-  } else if (modality === 'MR' || desc.includes('CRÂNIO')) {
-    // Corte Axial RM / TC Encéfalo
-    ctx.strokeStyle = appState.dicomSim.inverted ? '#0f172a' : '#e2e8f0';
-    ctx.lineWidth = 7;
-    ctx.fillStyle = appState.dicomSim.inverted ? '#cbd5e1' : '#334155';
-    ctx.beginPath();
-    ctx.ellipse(cx, cy, 118 * scaleRadius, 148 * scaleRadius, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    // Foice inter-hemisférica
-    ctx.strokeStyle = appState.dicomSim.inverted ? '#334155' : '#94a3b8';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(cx, cy - 142 * scaleRadius);
-    ctx.lineTo(cx, cy + 142 * scaleRadius);
-    ctx.stroke();
-
-    // Ventrículos laterais
-    ctx.fillStyle = appState.dicomSim.inverted ? '#f8fafc' : '#050811';
-    ctx.beginPath();
-    ctx.ellipse(cx - 18, cy - 6, 12 * scaleRadius, 32 * scaleRadius, -0.2, 0, Math.PI * 2);
-    ctx.ellipse(cx + 18, cy - 6, 12 * scaleRadius, 32 * scaleRadius, 0.2, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Foco hiperintenso em DWI caso protocolo AVC (CASE-002)
-    if (item?.caseId === 'CASE-002' && slice >= 15 && slice <= 23) {
-      ctx.fillStyle = '#38bdf8';
-      ctx.beginPath();
-      ctx.arc(cx - 52 * scaleRadius, cy - 18 * scaleRadius, 6, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  } else if (modality === 'PT') {
-    // PET-CT Fusão Metabólica
-    ctx.fillStyle = '#1e293b';
-    ctx.beginPath();
-    ctx.ellipse(cx, cy, 155 * scaleRadius, 110 * scaleRadius, 0, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Fígado com foco hipermetabólico SUVmáx 8.4 (Hotspot PET)
-    const grad = ctx.createRadialGradient(cx - 55, cy - 10, 2, cx - 55, cy - 10, 26);
-    grad.addColorStop(0, '#fef08a');
-    grad.addColorStop(0.45, '#f43f5e');
-    grad.addColorStop(1, 'rgba(244, 63, 94, 0)');
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(cx - 55, cy - 10, 26, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (modality === 'US') {
-    // Setor Acústico Convex Ultrassonográfico
+  if (modality === 'US') {
     ctx.fillStyle = '#1e293b';
     ctx.beginPath();
     ctx.moveTo(cx, 50);
     ctx.arc(cx, 50, 320, Math.PI * 0.28, Math.PI * 0.72);
     ctx.closePath();
     ctx.fill();
-
-    // Doppler Color Box
     ctx.strokeStyle = '#38bdf8';
     ctx.strokeRect(cx - 70, cy - 30, 140, 90);
-    ctx.fillStyle = '#ef4444';
-    ctx.beginPath();
-    ctx.ellipse(cx - 15, cy + 12, 16, 8, 0.3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#3b82f6';
-    ctx.beginPath();
-    ctx.ellipse(cx + 18, cy + 18, 14, 7, -0.2, 0, Math.PI * 2);
-    ctx.fill();
   } else {
-    // Radiografia Digital CR / DX
     ctx.fillStyle = appState.dicomSim.inverted ? '#e2e8f0' : '#0f172a';
     ctx.fillRect(cx - 140, cy - 170, 280, 340);
     ctx.strokeStyle = appState.dicomSim.inverted ? '#1e293b' : '#cbd5e1';
@@ -1020,12 +1122,10 @@ function drawDicomSimulatorCanvas() {
     }
   }
 
-  // Marcadores radiológicos Direito (R) / Esquerdo (L) e Escala em cm
   ctx.fillStyle = '#38bdf8';
   ctx.font = 'bold 13px "JetBrains Mono", monospace';
-  ctx.fillText('R', 20, cy);
-  ctx.fillText('L', w - 30, cy);
-
+  ctx.fillText('R', 16, cy);
+  ctx.fillText('L', w - 26, cy);
   ctx.restore();
 }
 

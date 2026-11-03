@@ -22,15 +22,46 @@ function loadEnvFile() {
 
 loadEnvFile();
 
+/**
+ * Resolve o diretório do dataset CPTAC-CM automaticamente tanto no Linux (WSL) quanto via UNC no Windows
+ */
+function resolveCptacDatasetRoot() {
+  const candidates = [
+    process.env.CPTAC_DATASET_PATH,
+    process.env.CPTAC_DATASET_UNC_PATH,
+    '/home/rafaelwhoa/projects/Datasets/RISData/CPTAC-CM/manifest-1792597450509',
+    '\\\\wsl.localhost\\Ubuntu\\home\\rafaelwhoa\\projects\\Datasets\\RISData\\CPTAC-CM\\manifest-1792597450509',
+    path.resolve(__dirname, '../../../Datasets/RISData/CPTAC-CM/manifest-1792597450509')
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate) && fs.existsSync(path.join(candidate, 'metadata.csv'))) {
+        return candidate;
+      }
+    } catch {
+      // ignora candidato inacessível
+    }
+  }
+  return candidates[0];
+}
+
 const ORTHANC_PORT = Number(process.env.ORTHANC_PORT || 8042);
 const ORTHANC_URL = (process.env.ORTHANC_URL || `http://localhost:${ORTHANC_PORT}`).replace(/\/+$/, '');
 const ORTHANC_DEFAULT_VIEWER = process.env.ORTHANC_DEFAULT_VIEWER || 'stone-webviewer';
 const ORTHANC_FALLBACK_VIEWER = process.env.ORTHANC_FALLBACK_VIEWER || 'explorer.html';
+const CPTAC_ROOT_PATH = resolveCptacDatasetRoot();
 
 const orthancConfig = {
   server: {
     port: Number(process.env.PORT || 3000),
     host: process.env.HOST || '0.0.0.0'
+  },
+  dataset: {
+    name: 'TCIA CPTAC-CM (Cutaneous Melanoma)',
+    rootPath: CPTAC_ROOT_PATH,
+    metadataCsvPath: path.join(CPTAC_ROOT_PATH, 'metadata.csv'),
+    dicomBaseDir: path.join(CPTAC_ROOT_PATH, 'CPTAC-CM')
   },
   orthanc: {
     url: ORTHANC_URL,

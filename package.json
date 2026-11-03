@@ -1,11 +1,12 @@
 {
   "name": "synapseris-pacs",
-  "version": "1.0.0",
-  "description": "Sistema Web de RIS (Radiology Information System) integrado ao Orthanc PACS com arquitetura HL7 FHIR R4",
+  "version": "1.1.0",
+  "description": "Sistema Web de RIS (Radiology Information System) integrado ao Orthanc PACS e Dataset Real TCIA CPTAC-CM com arquitetura HL7 FHIR R4",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "seed:orthanc": "node src/scripts/seed-orthanc.js",
     "test": "node src/test-smoke.js"
   },
   "keywords": [
@@ -13,6 +14,7 @@
     "PACS",
     "Orthanc",
     "DICOM",
+    "CPTAC-CM",
     "HL7",
     "FHIR",
     "Teleradiology"
